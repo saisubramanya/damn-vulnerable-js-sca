@@ -1,0 +1,152 @@
+
+# ============================================================
+# TRIVY SECURITY SCANNING - AZURE DEVOPS PIPELINE
+# Container Vulnerability + Infrastructure as Code Scanning
+# ============================================================
+
+trigger:
+  branches:
+    include:
+      - main
+
+pr:
+  branches:
+    include:
+      - main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  imageName: 'my-app'
+  imageTag: '$(Build.BuildId)'
+  reportDirectory: '$(Build.ArtifactStagingDirectory)/trivy-reports'
+
+steps:
+
+# ------------------------------------------------------------
+# STEP 1: CHECKOUT SOURCE CODE
+# ------------------------------------------------------------
+
+- checkout: self
+  displayName: 'Checkout Source Code'
+
+# ------------------------------------------------------------
+# STEP 2: INSTALL TRIVY
+# ------------------------------------------------------------
+
+- bash: |
+    set -e
+
+    echo "Installing Trivy Security Scanner..."
+
+    curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+
+    trivy --version
+
+    echo "Trivy installation completed."
+
+  displayName: 'Install Trivy Scanner'
+
+# ------------------------------------------------------------
+# STEP 3: CREATE REPORT DIRECTORY
+# ------------------------------------------------------------
+
+- bash: |
+    mkdir -p "$(reportDirectory)"
+    echo "Report directory created."
+  displayName: 'Initialize Scan Reports'
+
+# ------------------------------------------------------------
+# STEP 4: BUILD DOCKER IMAGE
+# ------------------------------------------------------------
+
+- bash: |
+    set -e
+
+    echo "Building Docker image..."
+
+    docker build \
+      -t "$(imageName):$(imageTag)" \
+      .
+
+    docker images
+
+  displayName: 'Build Docker Image'
+
+# ------------------------------------------------------------
+# STEP 5: TRIVY CONTAINER VULNERABILITY SCAN
+# ------------------------------------------------------------
+
+- bash: |
+    echo "Starting Trivy Container Vulnerability Scan..."
+
+    trivy image \
+      --scanners vuln \
+      --severity CRITICAL,HIGH \
+      --format sarif \
+      --output "$(reportDirectory)/trivy-container-results.sarif" \
+      --exit-code 1 \
+      "$(imageName):$(imageTag)"
+
+  displayName: 'Trivy Container Vulnerability Scan'
+
+# ------------------------------------------------------------
+# STEP 6: TRIVY INFRASTRUCTURE AS CODE SCAN
+# ------------------------------------------------------------
+
+- bash: |
+    echo "Starting Trivy Infrastructure as Code Scan..."
+
+    trivy config \
+      --severity HIGH,MEDIUM \
+      --format sarif \
+      --output "$(reportDirectory)/trivy-iac-results.sarif" \
+      --exit-code 0 \
+      .
+
+  displayName: 'Trivy Infrastructure as Code Scan'
+  condition: succeededOrFailed()
+
+# ------------------------------------------------------------
+# STEP 7: GENERATE CONTAINER JSON REPORT
+# ------------------------------------------------------------
+
+- bash: |
+    echo "Generating Container JSON Report..."
+
+    trivy image \
+      --scanners vuln \
+      --format json \
+      --output "$(reportDirectory)/trivy-container-results.json" \
+      "$(imageName):$(imageTag)"
+
+  displayName: 'Generate Container JSON Report'
+  condition: succeededOrFailed()
+
+# ------------------------------------------------------------
+# STEP 8: GENERATE IaC JSON REPORT
+# ------------------------------------------------------------
+
+- bash: |
+    echo "Generating IaC JSON Report..."
+
+    trivy config \
+      --format json \
+      --output "$(reportDirectory)/trivy-iac-results.json" \
+      .
+
+  displayName: 'Generate IaC JSON Report'
+  condition: succeededOrFailed()
+
+# ------------------------------------------------------------
+# STEP 9: PUBLISH SECURITY REPORTS
+# ------------------------------------------------------------
+
+- task: PublishPipelineArtifact@1
+  displayName: 'Publish Trivy Security Reports'
+  condition: always()
+  inputs:
+    targetPath: '$(reportDirectory)'
+    artifact: 'Trivy-Security-Reports'
+    publishLocation: 'pipeline'
