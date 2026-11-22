@@ -1,0 +1,60 @@
+name: Trivy Security Scan
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  trivy-scan:
+    name: Trivy Vulnerability & IaC Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ---------------------------------------------------------
+      # Step 1: Build or Fetch Image (Adjust based on your setup)
+      # If you already have an image, skip this step.
+      # ---------------------------------------------------------
+      - name: Build Docker Image
+        run: docker build -t my-app:${{ github.sha }} .
+
+      # ---------------------------------------------------------
+      # Step 2: Run Trivy Container Scan
+      # ---------------------------------------------------------
+      - name: Run Trivy vulnerability scanner in container mode
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'my-app:${{ github.sha }}'
+          format: 'sarif'
+          output: 'trivy-container-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'
+
+      # ---------------------------------------------------------
+      # Step 3: Run Trivy IaC Scan (Terraform/K8s/YAML)
+      # ---------------------------------------------------------
+      - name: Run Triaci Infrastructure-as-Code scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'config'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'triaci-iac-results.sarif'
+          severity: 'HIGH,MEDIUM'
+          exit-code: '0'
+
+      # ---------------------------------------------------------
+      # Step 4: Upload results to GitHub Security Tab
+      # ---------------------------------------------------------
+      - name: Upload Trivy scan results to GitHub Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: |
+            trivy-container-results.sarif,
+            triaci-iac-results.sarif
