@@ -1,0 +1,99 @@
+
+name: Trivy Security Scan
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  trivy-scan:
+    name: Trivy Vulnerability and IaC Scan
+    runs-on: ubuntu-24.04
+
+    steps:
+      # -------------------------------------------------------
+      # STEP 1: Checkout Source Code
+      # -------------------------------------------------------
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # -------------------------------------------------------
+      # STEP 2: Build Docker Image
+      # -------------------------------------------------------
+      - name: Build Docker Image
+        run: |
+          docker build \
+            -t my-app:${{ github.sha }} \
+            .
+
+      # -------------------------------------------------------
+      # STEP 3: Container Image Vulnerability Scan
+      # -------------------------------------------------------
+      - name: Trivy Container Vulnerability Scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: image
+          image-ref: my-app:${{ github.sha }}
+          format: sarif
+          output: trivy-container-results.sarif
+          severity: CRITICAL,HIGH
+          vuln-type: os,library
+          ignore-unfixed: false
+          exit-code: '1'
+          hide-progress: true
+
+      # -------------------------------------------------------
+      # STEP 4: Infrastructure as Code Scan
+      # -------------------------------------------------------
+      - name: Trivy Infrastructure as Code Scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: config
+          scan-ref: .
+          format: sarif
+          output: trivy-iac-results.sarif
+          severity: HIGH,MEDIUM
+          exit-code: '0'
+          hide-progress: true
+
+      # -------------------------------------------------------
+      # STEP 5: Upload Container SARIF Report
+      # -------------------------------------------------------
+      - name: Upload Container Scan Results
+        if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-container-results.sarif
+          category: trivy-container
+
+      # -------------------------------------------------------
+      # STEP 6: Upload IaC SARIF Report
+      # -------------------------------------------------------
+      - name: Upload IaC Scan Results
+        if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-iac-results.sarif
+          category: trivy-iac
+
+      # -------------------------------------------------------
+      # STEP 7: Preserve Scan Reports as Workflow Artifacts
+      # -------------------------------------------------------
+      - name: Archive Trivy Scan Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-security-reports
+          path: |
+            trivy-container-results.sarif
+            trivy-iac-results.sarif
+          if-no-files-found: ignore
+          retention-days: 30
