@@ -1,0 +1,195 @@
+
+# ============================================================
+# TRIVY SECURITY SCANNING - AZURE DEVOPS
+# Container Vulnerability + IaC Security Scanning
+# ============================================================
+
+trigger:
+  branches:
+    include:
+      - main
+
+pr:
+  branches:
+    include:
+      - main
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  imageName: my-app
+  imageTag: $(Build.BuildId)
+  reportDirectory: $(Build.ArtifactStagingDirectory)/trivy-reports
+
+steps:
+
+# ------------------------------------------------------------
+# STEP 1: CHECKOUT SOURCE CODE
+# ------------------------------------------------------------
+
+- checkout: self
+  displayName: Checkout Source Code
+
+# ------------------------------------------------------------
+# STEP 2: INSTALL TRIVY
+# ------------------------------------------------------------
+
+- bash: |
+    set -e
+
+    echo "Installing Trivy..."
+
+    curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+
+    trivy --version
+
+  displayName: Install Trivy Scanner
+
+# ------------------------------------------------------------
+# STEP 3: INITIALIZE REPORT DIRECTORY
+# ------------------------------------------------------------
+
+- bash: |
+    mkdir -p "$(reportDirectory)"
+
+    echo "Report directory initialized."
+
+  displayName: Initialize Scan Reports
+
+# ------------------------------------------------------------
+# STEP 4: AUTOMATICALLY DETECT DOCKERFILE
+# ------------------------------------------------------------
+
+- bash: |
+    set -e
+
+    echo "Searching repository for Dockerfile..."
+
+    DOCKERFILE=$(find . \
+      -type d \( \
+        -name .git -o \
+        -name node_modules -o \
+        -name .venv -o \
+        -name vendor \
+      \) -prune -o \
+      -type f -name Dockerfile -print | sort | head -n 1)
+
+    if [ -n "$DOCKERFILE" ]; then
+
+      echo "Dockerfile detected: $DOCKERFILE"
+
+      echo "##vso[task.setvariable variable=HAS_DOCKERFILE]true"
+      echo "##vso[task.setvariable variable=DOCKERFILE_PATH]$DOCKERFILE"
+
+    else
+
+      echo "No Dockerfile found in repository."
+      echo "Container image scanning will be skipped."
+      echo "Trivy IaC scanning will continue."
+
+      echo "##vso[task.setvariable variable=HAS_DOCKERFILE]false"
+
+    fi
+
+  displayName: Detect Dockerfile
+
+# ------------------------------------------------------------
+# STEP 5: BUILD DOCKER IMAGE
+# ------------------------------------------------------------
+
+- bash: |
+    set -e
+
+    echo "Building Docker image..."
+
+    docker build \
+      -f "$(DOCKERFILE_PATH)" \
+      -t "$(imageName):$(imageTag)" \
+      .
+
+    echo "Docker image built successfully."
+
+    docker images
+
+    echo "##vso[task.setvariable variable=IMAGE_BUILD_SUCCEEDED]true"
+
+  displayName: Build Docker Image
+  condition: and(succeeded(), eq(variables['HAS_DOCKERFILE'], 'true'))
+
+# ------------------------------------------------------------
+# STEP 6: TRIVY CONTAINER VULNERABILITY SCAN
+# ------------------------------------------------------------
+
+- bash: |
+    set -e
+
+    echo "Starting container vulnerability scan..."
+
+    trivy image \
+      --scanners vuln \
+      --severity CRITICAL,HIGH \
+      --vuln-type os,library \
+      --format sarif \
+      --output "$(reportDirectory)/trivy-container-results.sarif" \
+      --exit-code 1 \
+      "$(imageName):$(imageTag)"
+
+  displayName: Trivy Container Vulnerability Scan
+  condition: and(succeededOrFailed(), eq(variables['IMAGE_BUILD_SUCCEEDED'], 'true'))
+
+# ------------------------------------------------------------
+# STEP 7: TRIVY IaC SECURITY SCAN
+# ------------------------------------------------------------
+
+- bash: |
+    echo "Starting Infrastructure as Code scan..."
+
+    trivy config \
+      --severity HIGH,MEDIUM \
+      --format sarif \
+      --output "$(reportDirectory)/trivy-iac-results.sarif" \
+      --exit-code 0 \
+      .
+
+  displayName: Trivy IaC Security Scan
+  condition: succeededOrFailed()
+
+# ------------------------------------------------------------
+# STEP 8: GENERATE CONTAINER JSON REPORT
+# ------------------------------------------------------------
+
+- bash: |
+    trivy image \
+      --scanners vuln \
+      --format json \
+      --output "$(reportDirectory)/trivy-container-results.json" \
+      "$(imageName):$(imageTag)"
+
+  displayName: Generate Container JSON Report
+  condition: and(succeededOrFailed(), eq(variables['IMAGE_BUILD_SUCCEEDED'], 'true'))
+
+# ------------------------------------------------------------
+# STEP 9: GENERATE IaC JSON REPORT
+# ------------------------------------------------------------
+
+- bash: |
+    trivy config \
+      --format json \
+      --output "$(reportDirectory)/trivy-iac-results.json" \
+      .
+
+  displayName: Generate IaC JSON Report
+  condition: succeededOrFailed()
+
+# ------------------------------------------------------------
+# STEP 10: PUBLISH SECURITY REPORTS
+# ------------------------------------------------------------
+
+- task: PublishPipelineArtifact@1
+  displayName: Publish Trivy Security Reports
+  condition: always()
+  inputs:
+    targetPath: $(reportDirectory)
+    artifact: Trivy-Security-Reports
+    publishLocation: pipeline
